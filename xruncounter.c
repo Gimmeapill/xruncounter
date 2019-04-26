@@ -30,6 +30,7 @@ double elapsedTime = 0.0;
 double round_trip = 0.0;
 
 char nperiods[10];
+char rtprio[10];
 
 void
 sys_info()
@@ -37,12 +38,52 @@ sys_info()
     FILE *fp;
     char infostr[200];
     char logstr[200];
+    char log2str[200];
 
-    fp = popen("hostnamectl | sed -e '/Chassis/b' -e '/Operating System/b' -e '/Kernel/b' -e '/Architecture/b' -e d", "r");
+    printf("\n******************** SYSTEM CHECK *********************\n\n");
+
+    fp = popen("stdbuf -oL grep -rnw '/proc/asound/card'*'/pcm'*'p/sub'*'/status' -e 'RUNNING' | head -n1 | awk -F '/' '{print $4}'|awk '{print substr($0,length,1)}' | uniq", "r");
+    if (fp != NULL) {
+        if (fgets(infostr, sizeof(infostr)-1, fp) != NULL) {
+            strcpy(logstr, "cat /proc/asound/cards | sed -n '/^ ");
+            strcat(logstr, strtok(infostr, "\n"));
+            strcat(logstr, "/p' ");
+            strcat(logstr, " | sed 's/.*:/Sound Playback:/' ");
+            fp = popen(logstr, "r");
+            if (fgets(infostr, sizeof(infostr)-1, fp) != NULL) {
+                printf("    %s", infostr);
+            }
+        }
+    }
+    fp = NULL;
+
+    fp = popen("stdbuf -oL grep -rnw '/proc/asound/card'*'/pcm'*'c/sub'*'/status' -e 'RUNNING' | head -n1 | awk -F '/' '{print $4}'|awk '{print substr($0,length,1)}' | uniq", "r");
+    if (fp != NULL) {
+        if (fgets(infostr, sizeof(infostr)-1, fp) != NULL) {
+            strcpy(logstr, "cat /proc/asound/cards | sed -n '/^ ");
+            strcat(logstr, strtok(infostr, "\n"));
+            strcat(logstr, "/p' ");
+            strcat(logstr, " | sed 's/.*:/Sound Capture:/' ");
+            fp = popen(logstr, "r");
+            if (fgets(infostr, sizeof(infostr)-1, fp) != NULL) {
+                printf("     %s", infostr);
+            }
+        }
+    }
+    fp = NULL;
+
+    fp = popen("lspci | grep VGA | sed 's/.*:/Graphic Card:/'", "r");
+    if (fp != NULL) {
+        if (fgets(infostr, sizeof(infostr)-1, fp) != NULL) {
+            printf("      %s", infostr);
+        }
+    }
+    fp = NULL;
+
+    fp = popen("hostnamectl | sed -e '/Operating System/b' -e '/Kernel/b' -e '/Architecture/b' -e d", "r");
     if (fp == NULL) {
         printf("Failed to fetch system informations\n" );
     } else {
-        printf("\n************************ SYSTEM ************************\n\n");
         while (fgets(infostr, sizeof(infostr)-1, fp) != NULL) {
             printf("%s", infostr);
         }
@@ -65,6 +106,7 @@ sys_info()
             strcpy(logstr, "ps -p ");
             strcat(logstr, strtok(infostr, "\n"));
             strcat(logstr, " -o command=");
+            strcpy(log2str, logstr);
             fp = NULL;
             fp = popen(logstr, "r");
             if (fgets(infostr, sizeof(infostr)-1, fp) != NULL) {
@@ -75,7 +117,13 @@ sys_info()
             fp = NULL;
             fp = popen(logstr, "r");
             if (fgets(infostr, sizeof(infostr)-1, fp) != NULL) {
-                strcpy(nperiods, infostr);
+                strcpy(nperiods, strtok(infostr, "\n"));
+            }
+            strcat(log2str, "| grep -oP '(?<=-P).*' | cut  -d' ' -f1");
+            fp = NULL;
+            fp = popen(log2str, "r");
+            if (fgets(infostr, sizeof(infostr)-1, fp) != NULL) {
+                strcpy(rtprio, strtok(infostr, "\n"));
             }
         } else {
             fp = NULL;
@@ -111,7 +159,24 @@ sys_info()
                                     strcpy(nperiods,target );
                                     free( target );
                                 }
-                                break;
+                            } else if(strstr(infostr, "realtime-priority") != NULL) {
+                                const char *PATTERN1 = "<option name=\"realtime-priority\">";
+                                const char *PATTERN2 = "</option>";
+                                char *target = NULL;
+                                char *start, *end;
+
+                                if ( (start = strstr( infostr, PATTERN1 )) ) {
+                                    start += strlen( PATTERN1 );
+                                    if ( (end = strstr( start, PATTERN2 )) ) {
+                                        target = ( char * )malloc( end - start + 1 );
+                                        memcpy( target, start, end - start );
+                                        target[end - start] = '\0';
+                                    }
+                                }
+                                if ( target ) {
+                                    strcpy(rtprio,target );
+                                    free( target );
+                                }
                             }
                         }
                     fclose(fp);
@@ -122,7 +187,7 @@ sys_info()
     }
     fp = NULL;
 
-    fp = popen("pactl info | grep jack", "r");
+    fp = popen("pactl list short modules | grep jack-", "r");
     printf("\n********************** Pulseaudio **********************\n\n");
     if (fp == NULL) {
         printf("    pulse isn't installed?\n" );
@@ -240,10 +305,14 @@ main (int argc, char *argv[])
         fprintf (stderr, "Buffer/Periods  %s\n", nperiods);
     }
 
-    if (!jack_is_realtime(client)) {
-       fprintf (stderr, "jack isn't running with realtime priority\n");
+    if (jack_is_realtime(client)) {
+        if(strlen(rtprio)) {
+            fprintf (stderr, "jack running with realtime priority %s\n", rtprio);
+        } else {
+            fprintf (stderr, "jack running with realtime priority\n");
+        }
     } else {
-       fprintf (stderr, "jack running with realtime priority\n"); 
+        fprintf (stderr, "jack isn't running with realtime priority\n"); 
     }
 
     while (run) {
