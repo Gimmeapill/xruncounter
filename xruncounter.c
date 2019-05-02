@@ -1,3 +1,6 @@
+#define _GNU_SOURCE
+#include <sys/sysinfo.h>
+
 #include <stdio.h>
 #include <errno.h>
 #include <unistd.h>
@@ -10,35 +13,120 @@
 
 /*   gcc -Wall xruncounter.c -lm `pkg-config --cflags --libs jack` -o xruncounter */
 
-jack_client_t   *client;
-jack_port_t     *in_port;
-jack_port_t     *out_port;
-jack_time_t      start;
-jack_time_t      stop;
-jack_time_t      frame_time;
-jack_time_t      frame_time1;
+#define MAX_CPUS  72 // Intel Xeon Phi 7290 
+#define BUF_MAX 1024
 
-static int   xruns = 0;
-static int   grow = 100;
-static int   first_x_run = 0;
-static float first_xrun_ms = 0;
-static float xrt = 0;
-static float dsp_load = 0;
-static int   run = 1;
+jack_client_t   *client[MAX_CPUS];
+jack_port_t     *in_port[MAX_CPUS];
+jack_port_t     *out_port[MAX_CPUS];
+jack_time_t      start[MAX_CPUS];
+jack_time_t      stop[MAX_CPUS];
+jack_time_t      frame_time[MAX_CPUS];
+jack_time_t      frame_time1[MAX_CPUS];
 
-double elapsedTime = 0.0;
-double round_trip = 0.0;
+int   run = 1;
+
+int   xruns[MAX_CPUS];
+int   grow[MAX_CPUS];
+int   grow_it = 100;
+int   first_x_run = 0;
+float first_xrun_ms = 0;
+float xrt = 0;
+float dsp_load = 0;
+
+double elapsedTime[MAX_CPUS];
+double round_trip[MAX_CPUS];
 
 char nperiods[10];
 char rtprio[10];
+
+char terminal_clearline [10];
+char terminal_moveup [10];
+char terminal_movedown [10];
+
+unsigned long long int cpu_stats[4][MAX_CPUS]; // ticks/ticks_old/idle/idle_old
+unsigned long long int ticks[10];
+
+int cpus;
+int CPUS;
+// int CPU[MAX_CPUS]; disabled, as print is to slow to monitor threads switching CPU num.
+FILE *fpstat;
+int read_stat = 0;
+
+int
+read_ticks (FILE *fpsat, unsigned long long int *ticks)
+{
+    int retval;
+    char buffer[BUF_MAX];
+    
+    if (!fgets (buffer, BUF_MAX, fpsat)) {
+        perror ("Error"); 
+    }
+    retval = sscanf (buffer, "c%*s %16llu %16llu %16llu %16llu %16llu %16llu %16llu %16llu %Lu %16llu",
+        &ticks[0], &ticks[1], &ticks[2],  &ticks[3],  &ticks[4],  &ticks[5], 
+        &ticks[6], &ticks[7], &ticks[8], &ticks[9]); 
+    if (retval == 0) {
+        return -1;
+    }
+    if (retval < 4) {
+        fprintf (stderr, "Error reading /proc/stat cpu field\n");
+        return 0;
+    }
+    return 1;
+}
+
+void
+cpu_info(FILE *fpsat, double *percent_usage)
+{
+    int i;
+    unsigned long long int cpu_ticks;
+    unsigned long long int cpu_idle;
+
+    fseek (fpstat, 0, SEEK_SET);
+    fflush (fpstat);
+
+    for (int count = 0; count < CPUS+1; count++) {
+        cpu_stats[1][count] = cpu_stats[0][count];
+        cpu_stats[3][count] = cpu_stats[2][count];
+
+        if (!read_ticks (fpstat, ticks)) break; 
+        for (i=0, cpu_stats[0][count] = 0; i<8; i++) { // guest and guest_nice been included in user and nice already
+          cpu_stats[0][count] += ticks[i]; 
+        }
+        cpu_stats[2][count] = ticks[3]; // idle time
+
+        cpu_ticks = cpu_stats[0][count] - cpu_stats[1][count];
+        cpu_idle = cpu_stats[2][count] - cpu_stats[3][count];
+
+        percent_usage[count] = ((cpu_ticks - cpu_idle) / (double) cpu_ticks) * 100;
+    }
+}
+
+int
+monitor_stat(FILE *fpsat)
+{
+    int i;
+    fpstat = fopen ("/proc/stat", "r");
+    if (fpstat == NULL) {
+        return 0;
+    }
+    for (int count = 0; count < CPUS+1; count++) {
+        if (!read_ticks (fpstat, ticks)) break; 
+        for (i=0, cpu_stats[0][count] = 0; i<8; i++) {
+            cpu_stats[0][count] += ticks[i];
+        }
+        cpu_stats[2][count] = ticks[3]; /* idle ticks index */
+    }
+    return 1;
+}
 
 void
 sys_info()
 {
     FILE *fp;
-    char infostr[200];
-    char logstr[200];
-    char log2str[200];
+    char infostr[BUF_MAX];
+    char logstr[BUF_MAX];
+    char log2str[BUF_MAX];
 
     printf("\n******************** SYSTEM CHECK *********************\n\n");
 
@@ -200,29 +288,39 @@ sys_info()
     }
     pclose(fp);
 
-    printf("\n************************* Test *************************\n\n");
 }
 
 void
 jack_shutdown (void *arg)
 {
+    if (read_stat) {
+        fclose(fpstat);
+        for (int i = 1; i < CPUS+2; i++) {
+            fprintf(stderr,"%s", terminal_clearline);
+            fprintf(stderr,"%s", terminal_movedown);
+        }
+        for (int i = 1; i < CPUS+1; i++) {
+            fprintf(stderr,"%s", terminal_moveup);
+        }
+    }
     exit (1);
 }
 
 int
 jack_xrun_callback(void *arg)
 {
+    int v = (int) (intptr_t) arg;
     /* count xruns */
-    xruns += 1;
-    if (xruns == 1) {
-        first_x_run = grow/100;
-        dsp_load = jack_cpu_load(client);
-        first_xrun_ms = elapsedTime;
-        xrt = round_trip;
+    xruns[v] += 1;
+    if (xruns[v] == 1) {
+        first_x_run = grow[v]/grow_it;
+        dsp_load = jack_cpu_load(client[v]);
+        first_xrun_ms = elapsedTime[v];
+        xrt = round_trip[v];
     }
     fprintf (stderr, "Xrun %i at DSP load %.2f%s use %.2fms from %.2fms jack cycle time\n",
-      xruns ,jack_cpu_load(client), "%", elapsedTime,round_trip);
-    if ((int)jack_cpu_load(client)>95) run = 0;
+       xruns[v] ,jack_cpu_load(client[v]), "%", elapsedTime[v],round_trip[v]);
+    if ((int)jack_cpu_load(client[v])>95) run = 0;
     return 0;
 }
 
@@ -243,29 +341,42 @@ jack_buffersize_callback(jack_nframes_t nframes, void* arg)
 int
 jack_process(jack_nframes_t nframes, void *arg)
 {
-    start = jack_get_time();
+    int v = (int) (intptr_t) arg;
+    start[v] = jack_get_time();
 
-    frame_time = jack_frames_to_time (client, jack_last_frame_time(client));
-    round_trip = (double)(frame_time - frame_time1)/1000.0;
-    frame_time1 = frame_time;
+    frame_time[v] = jack_frames_to_time (client[v], jack_last_frame_time(client[v]));
+    round_trip[v] = (double)(frame_time[v] - frame_time1[v])/1000.0;
+    frame_time1[v] = frame_time[v];
 
     double d = 0;
-    for (int j ; j < grow; ++j) {
+    for (int j ; j < grow[v]; ++j) {
         d = tan(atan(tan(atan(tan(atan(tan(atan(tan(atan(123456789.123456789))))))))));
     }
-    grow +=100;
+    grow[v] +=grow_it;
     d = 0;
 
-    stop = jack_get_time();
-    elapsedTime = (double)(stop-start)/1000.0;
-    
+    stop[v] = jack_get_time();
+    elapsedTime[v] = (double)(stop[v]-start[v])/1000.0;
+    // CPU[v] = sched_getcpu(); // monitor contex switches here!!
     return (int)d;
 }
 
 void
 signal_handler (int sig)
 {
-    jack_client_close (client);
+    for (int i=0; i<cpus; i++) {
+        jack_client_close (client[i]);
+    }
+    if (read_stat) {
+        fclose(fpstat);
+        for (int i = 1; i < CPUS+2; i++) {
+            fprintf(stderr,"%s", terminal_clearline);
+            fprintf(stderr,"%s", terminal_movedown);
+        }
+        for (int i = 1; i < CPUS+1; i++) {
+            fprintf(stderr,"%s", terminal_moveup);
+        }
+    }
     fprintf (stderr, "\n signal %i received, exiting ...\n", sig);
     exit (0);
 }
@@ -275,37 +386,68 @@ main (int argc, char *argv[])
 {
     sys_info();
 
-    if ((client = jack_client_open ("xruncounter", JackNoStartServer, NULL)) == 0) {
-       fprintf (stderr, "jack server not running?\n");
-       return 1;
-    }
+    double percent_usage[MAX_CPUS];
 
-    in_port = jack_port_register(
-        client, "in_0", JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
-    out_port = jack_port_register(
-        client, "out_0", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+    sprintf(terminal_clearline, "%c[2K", 0x1B);
+    sprintf(terminal_moveup, "%c[1A", 0x1B);
+    sprintf(terminal_movedown, "%c[1B", 0x1B);
+
+    cpus = 1;
+    CPUS = get_nprocs();
+
+    size_t optind;
+    for (optind = 1; optind < argc && argv[optind][0] == '-'; optind++) {
+        switch (argv[optind][1]) {
+        case 's': grow_it = 10;  cpus = CPUS; break;
+        case 'm': grow_it = 100; cpus = CPUS; break;
+        default: grow_it = 100; cpus = 1; break;
+        }   
+    }   
 
     signal (SIGQUIT, signal_handler);
     signal (SIGTERM, signal_handler);
     signal (SIGHUP, signal_handler);
     signal (SIGINT, signal_handler);
 
-    jack_set_xrun_callback(client, jack_xrun_callback, 0);
-    jack_set_sample_rate_callback(client, jack_srate_callback, 0);
-    jack_set_buffer_size_callback(client, jack_buffersize_callback, 0);
-    jack_set_process_callback(client, jack_process, 0);
-    jack_on_shutdown (client, jack_shutdown, 0);
+    read_stat = monitor_stat(fpstat);
 
-    if (jack_activate (client)) {
-       fprintf (stderr, "cannot activate client");
-       return 1;
+    for (int i=0; i<MAX_CPUS; i++) {
+        grow[i] = grow_it;
+    }
+
+    printf("\n********************** Test %i Core *********************\n\n", cpus);
+
+    for (int i=0; i<cpus; i++) {
+        if ((client[i] = jack_client_open ("xruncounter", JackNoStartServer, NULL)) == 0) {
+           fprintf (stderr, "jack server not running?\n");
+           return 1;
+        }
+
+        in_port[i] = jack_port_register(
+            client[i], "in_0", JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
+        out_port[i] = jack_port_register(
+            client[i], "out_0", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+
+        jack_set_process_callback(client[i], jack_process, (void *) (intptr_t) i);
+    }
+
+    jack_set_xrun_callback(client[0], jack_xrun_callback, (void *) (intptr_t) 0);
+    jack_set_sample_rate_callback(client[0], jack_srate_callback, (void *) (intptr_t) 0);
+    jack_set_buffer_size_callback(client[0], jack_buffersize_callback, (void *) (intptr_t) 0);
+    jack_on_shutdown (client[0], jack_shutdown, (void *) (intptr_t) 0);
+
+    for (int i=0; i<cpus; i++) {
+        if (jack_activate (client[i])) {
+           fprintf (stderr, "cannot activate client");
+           return 1;
+        }
     }
 
     if (strlen(nperiods)) {
         fprintf (stderr, "Buffer/Periods  %s\n", nperiods);
     }
 
-    if (jack_is_realtime(client)) {
+    if (jack_is_realtime(client[0])) {
         if(strlen(rtprio)) {
             fprintf (stderr, "jack running with realtime priority %s\n", rtprio);
         } else {
@@ -316,15 +458,44 @@ main (int argc, char *argv[])
     }
 
     while (run) {
-       usleep (100000);
-       fprintf (stderr, "DSP load %.2f%s use %.2fms from %.2fms jack cycle time \r",
-         jack_cpu_load(client),"%", elapsedTime, round_trip);
-    }
+        usleep (200000);
 
-    fprintf(stderr, "in complete %i Xruns in %i cycles                      \n", xruns, grow/100);
+        if (read_stat) {
+            cpu_info(fpstat, percent_usage);
+
+            for (int i=1; i<CPUS+1; i++) {
+                if (i == 0) {
+                    fprintf (stderr,"Total = %3.2lf%% \t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n", percent_usage[i]);
+                } else {
+                    fprintf (stderr,"CPU %i = %3.2lf%% \t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n", i, percent_usage[i]);
+                }
+            }
+        }
+        fprintf (stderr, "DSP load %.2f%s use %.2fms from %.2fms jack cycle time \r",
+         jack_cpu_load(client[0]),"%", elapsedTime[0], round_trip[0]);
+
+        if (read_stat) {
+            for (int i = 1; i < CPUS+1; i++) {
+                fprintf(stderr,"%s", terminal_moveup);
+            }
+        }
+    }
+    if (read_stat) {
+        for (int i = 1; i < CPUS+2; i++) {
+            fprintf(stderr,"%s", terminal_clearline);
+            fprintf(stderr,"%s", terminal_movedown);
+        }
+        for (int i = 1; i < CPUS+1; i++) {
+            fprintf(stderr,"%s", terminal_moveup);
+        }
+    }
+    fprintf(stderr, "in complete %i Xruns in %i cycles                                  \n", xruns[0], grow[0]/grow_it);
     fprintf(stderr, "first Xrun happen at DSP load %.2f%s in cycle %i\n", dsp_load, "%", first_x_run);
     fprintf(stderr, "process takes %.2fms from total %.2fms jack cycle time\n",first_xrun_ms, xrt);
 
-    jack_client_close (client);
+    for (int i=0; i<cpus; i++) {
+        jack_client_close (client[i]);
+    }
+    if (read_stat) fclose(fpstat);
     exit (0);
 }
