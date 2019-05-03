@@ -130,9 +130,9 @@ sys_info()
 
     printf("\n******************** SYSTEM CHECK *********************\n\n");
 
-    fp = popen("stdbuf -oL grep -rnw '/proc/asound/card'*'/pcm'*'p/sub'*'/status' -e 'RUNNING' | head -n1 | awk -F '/' '{print $4}'|awk '{print substr($0,length,1)}' | uniq", "r");
+    fp = popen("grep -rnw '/proc/asound/card'*'/pcm'*'p/sub'*'/status' -e 'RUNNING' | awk -F '/' '{print $4}'|awk '{print substr($0,length,1)}' | uniq", "r");
     if (fp != NULL) {
-        if (fgets(infostr, sizeof(infostr)-1, fp) != NULL) {
+        while (fgets(infostr, sizeof(infostr)-1, fp) != NULL) {
             strcpy(logstr, "cat /proc/asound/cards | sed -n '/^ ");
             strcat(logstr, strtok(infostr, "\n"));
             strcat(logstr, "/p' ");
@@ -145,9 +145,9 @@ sys_info()
     }
     fp = NULL;
 
-    fp = popen("stdbuf -oL grep -rnw '/proc/asound/card'*'/pcm'*'c/sub'*'/status' -e 'RUNNING' | head -n1 | awk -F '/' '{print $4}'|awk '{print substr($0,length,1)}' | uniq", "r");
+    fp = popen("grep -rnw '/proc/asound/card'*'/pcm'*'c/sub'*'/status' -e 'RUNNING' | awk -F '/' '{print $4}'|awk '{print substr($0,length,1)}' | uniq", "r");
     if (fp != NULL) {
-        if (fgets(infostr, sizeof(infostr)-1, fp) != NULL) {
+        while (fgets(infostr, sizeof(infostr)-1, fp) != NULL) {
             strcpy(logstr, "cat /proc/asound/cards | sed -n '/^ ");
             strcat(logstr, strtok(infostr, "\n"));
             strcat(logstr, "/p' ");
@@ -465,9 +465,9 @@ main (int argc, char *argv[])
 
             for (int i=1; i<CPUS+1; i++) {
                 if (i == 0) {
-                    fprintf (stderr,"Total = %3.2lf%% \t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n", percent_usage[i]);
+                    fprintf (stderr,"Total = %3.2lf%%                                       \n", percent_usage[i]);
                 } else {
-                    fprintf (stderr,"CPU %i = %3.2lf%% \t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n", i, percent_usage[i]);
+                    fprintf (stderr,"CPU %i = %3.2lf%%                                       \n", i, percent_usage[i]);
                 }
             }
         }
