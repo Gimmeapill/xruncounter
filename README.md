@@ -29,8 +29,8 @@ gcc -Wall xruncounter.c -lm `pkg-config --cflags --libs jack` -o xruncounter
 
 - to run a simple test run: ./xruncounter
 - to run a test for multiple Core CPU, run: ./xruncounter -m
-- to run a Streß Test (multiple Core test with slowly growing DSP load)
+- to run a Stress Test (multiple Core test with slowly growing DSP load)
     - run: ./xruncounter -s 
-    - be careful with that one, please note the next option for critical.
+    ! be careful with that one, please note the next option before things turn critical !
 - to quit a test before it's over, press `ctrl + c`
 
