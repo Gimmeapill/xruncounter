@@ -130,7 +130,7 @@ sys_info()
 
     printf("\n******************** SYSTEM CHECK *********************\n\n");
 
-    fp = popen("rgrep -nw '/proc/asound/card'*'/pcm'*'p/sub'*'/status' -e 'RUNNING' | awk -F '/' '{print $4}'|awk '{print substr($0,length,1)}' | uniq", "r");
+    fp = popen("rgrep -nw -H '/proc/asound/card'*'/pcm'*'p/sub'*'/status' -e 'RUNNING' | awk -F '/' '{print $4}'|awk '{print substr($0,length,1)}' | uniq", "r");
     if (fp != NULL) {
         while (fgets(infostr, sizeof(infostr)-1, fp) != NULL) {
             strcpy(logstr, "cat /proc/asound/cards | sed -n '/^ ");
@@ -145,7 +145,7 @@ sys_info()
     }
     fp = NULL;
 
-    fp = popen("rgrep -nw '/proc/asound/card'*'/pcm'*'c/sub'*'/status' -e 'RUNNING' | awk -F '/' '{print $4}'|awk '{print substr($0,length,1)}' | uniq", "r");
+    fp = popen("rgrep -nw -H '/proc/asound/card'*'/pcm'*'c/sub'*'/status' -e 'RUNNING' | awk -F '/' '{print $4}'|awk '{print substr($0,length,1)}' | uniq", "r");
     if (fp != NULL) {
         while (fgets(infostr, sizeof(infostr)-1, fp) != NULL) {
             strcpy(logstr, "cat /proc/asound/cards | sed -n '/^ ");
