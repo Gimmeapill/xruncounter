@@ -275,7 +275,7 @@ sys_info()
     }
     fp = NULL;
 
-    fp = popen("pactl list short modules | grep jack-", "r");
+    fp = popen("pactl list short modules 2>/dev/null | grep jack-", "r");
     printf("\n********************** Pulseaudio **********************\n\n");
     if (fp == NULL) {
         printf("    pulse isn't installed?\n" );
